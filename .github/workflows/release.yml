@@ -1,0 +1,111 @@
+name: Release
+
+# Builds, signs and publishes the release APKs for an existing tag.
+#
+# This runs from master rather than on tag push, because upstream's tags
+# don't contain this workflow or docker/. The tagged source is built using
+# the docker/ tooling from the branch the workflow runs on.
+#
+# Required repository secrets:
+#   KEYSTORE_BASE64    base64-encoded signing keystore (.jks)
+#   KEYSTORE_PASSWORD  keystore password
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (e.g. v12.2)'
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.tag }}
+
+env:
+  TAG: ${{ inputs.tag }}
+  UPSTREAM_REPO: moonlight-stream/moonlight-android
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out build tooling
+        uses: actions/checkout@v4
+        with:
+          path: tools
+
+      - name: Check out tagged source
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          path: src
+          submodules: recursive
+
+      - name: Build builder image
+        run: docker build -t moonlight-builder tools/docker/
+
+      - name: Restore Gradle cache
+        uses: actions/cache@v4
+        with:
+          path: ~/gradle-docker
+          key: gradle-${{ hashFiles('src/**/*.gradle', 'src/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-
+
+      - name: Decode keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::KEYSTORE_BASE64 secret is not set"
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/keys"
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/keys/moonlight-fork.jks"
+
+      - name: Build and sign APKs
+        env:
+          KS_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          mkdir -p ~/gradle-docker
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -e KS_PASS -e HOME=/tmp \
+            -v "$PWD/src":/src \
+            -v "$PWD/tools/docker":/tools:ro \
+            -v "$RUNNER_TEMP/keys":/keys:ro \
+            -v ~/gradle-docker:/gradle \
+            moonlight-builder bash /tools/build-release.sh
+
+      - name: Write release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "Unofficial, self-signed build of [Moonlight Android $TAG](https://github.com/$UPSTREAM_REPO/releases/tag/$TAG), built from the same commit as upstream."
+            echo
+            echo '> [!NOTE]'
+            echo '> These APKs use the package names `com.limelight.unofficial` / `com.limelight.root.unofficial` and are signed with this fork'"'"'s key, so they install **alongside** the official Moonlight app rather than upgrading it.'
+            if body=$(gh release view "$TAG" -R "$UPSTREAM_REPO" --json body -q .body 2>/dev/null) && [ -n "$body" ]; then
+              echo
+              echo '## Upstream changes'
+              echo "$body"
+            fi
+          } > notes.md
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          apks=(src/dist/app-nonRoot-release.apk src/dist/app-root-release.apk)
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber "${apks[@]}"
+            gh release edit "$TAG" -R "$GITHUB_REPOSITORY" -F notes.md
+          else
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" --verify-tag \
+              -t "Moonlight Android $TAG" -F notes.md "${apks[@]}"
+          fi
+
+      - name: Clean up keystore
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/keys"
