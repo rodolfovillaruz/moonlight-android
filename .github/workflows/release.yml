@@ -32,12 +32,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out build tooling
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: tools
 
       - name: Check out tagged source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: refs/tags/${{ inputs.tag }}
           path: src
@@ -47,7 +47,7 @@ jobs:
         run: docker build -t moonlight-builder tools/docker/
 
       - name: Restore Gradle cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/gradle-docker
           key: gradle-${{ hashFiles('src/**/*.gradle', 'src/gradle/wrapper/gradle-wrapper.properties') }}
