@@ -1,0 +1,1 @@
+- Added Office Mode: stream in portrait with the video on top and a trackpad below
