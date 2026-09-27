@@ -62,6 +62,7 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.util.Rational;
 import android.view.Display;
+import android.view.Gravity;
 import android.view.InputDevice;
 import android.view.KeyCharacterMap;
 import android.view.KeyEvent;
@@ -96,7 +97,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     // Only 2 touches are supported
     private final TouchContext[] touchContextMap = new TouchContext[2];
+    private final TouchContext[] officeTouchContextMap = new TouchContext[2];
     private long threeFingerDownTime = 0;
+
+    // Office mode: portrait layout with the stream on top and a trackpad below
+    private boolean officeMode;
+    private View officeTrackpadPanel;
+    private View officeTrackpadView;
 
     private static final int REFERENCE_HORIZ_RES = 1280;
     private static final int REFERENCE_VERT_RES = 720;
@@ -180,6 +187,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     public static final String EXTRA_PC_NAME = "PcName";
     public static final String EXTRA_APP_HDR = "HDR";
     public static final String EXTRA_SERVER_CERT = "ServerCert";
+    public static final String EXTRA_OFFICE_MODE = "OfficeMode";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -218,11 +226,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         // Read the stream preferences
         prefConfig = PreferenceConfiguration.readPreferences(this);
         tombstonePrefs = Game.this.getSharedPreferences("DecoderTombstone", 0);
+        officeMode = Game.this.getIntent().getBooleanExtra(EXTRA_OFFICE_MODE, false);
 
-        // Enter landscape unless we're on a square screen
+        // Enter landscape unless we're on a square screen (or portrait for office mode)
         setPreferredOrientationForCurrentDisplay();
 
-        if (prefConfig.stretchVideo || shouldIgnoreInsetsForResolution(prefConfig.width, prefConfig.height)) {
+        if (!officeMode && (prefConfig.stretchVideo || shouldIgnoreInsetsForResolution(prefConfig.width, prefConfig.height))) {
             // Allow the activity to layout under notches if the fill-screen option
             // was turned on by the user or it's a full-screen native resolution
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -494,7 +503,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         // Initialize touch contexts
         for (int i = 0; i < touchContextMap.length; i++) {
-            if (!prefConfig.touchscreenTrackpad) {
+            if (isAbsoluteTouchMode()) {
                 touchContextMap[i] = new AbsoluteTouchContext(conn, i, streamView);
             }
             else {
@@ -502,6 +511,17 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         REFERENCE_HORIZ_RES, REFERENCE_VERT_RES,
                         streamView, prefConfig);
             }
+        }
+
+        if (officeMode) {
+            // Scale trackpad movement against the stream view (not the trackpad panel)
+            // so horizontal and vertical sensitivity stay uniform.
+            for (int i = 0; i < officeTouchContextMap.length; i++) {
+                officeTouchContextMap[i] = new RelativeTouchContext(conn, i,
+                        REFERENCE_HORIZ_RES, REFERENCE_VERT_RES,
+                        streamView, prefConfig);
+            }
+            setupOfficeMode();
         }
 
         if (prefConfig.onscreenController) {
@@ -535,7 +555,101 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         streamView.getHolder().addCallback(this);
     }
 
+    private void setupOfficeMode() {
+        officeTrackpadPanel = findViewById(R.id.officeTrackpadPanel);
+        officeTrackpadView = findViewById(R.id.officeTrackpad);
+
+        // Pin the stream to the top of the screen, leaving the rest for the trackpad
+        FrameLayout.LayoutParams streamParams = (FrameLayout.LayoutParams) streamView.getLayoutParams();
+        streamParams.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
+        streamView.setLayoutParams(streamParams);
+
+        // Keep the trackpad panel directly below the stream, whatever size it ends up
+        streamView.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
+            @Override
+            public void onLayoutChange(View v, int left, int top, int right, int bottom,
+                                       int oldLeft, int oldTop, int oldRight, int oldBottom) {
+                final int streamBottom = bottom;
+                officeTrackpadPanel.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        FrameLayout.LayoutParams panelParams =
+                                (FrameLayout.LayoutParams) officeTrackpadPanel.getLayoutParams();
+                        if (panelParams.topMargin != streamBottom) {
+                            panelParams.topMargin = streamBottom;
+                            officeTrackpadPanel.setLayoutParams(panelParams);
+                        }
+                    }
+                });
+            }
+        });
+
+        officeTrackpadView.setOnTouchListener(this);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            officeTrackpadView.requestUnbufferedDispatch(InputDevice.SOURCE_CLASS_POINTER);
+        }
+
+        findViewById(R.id.officeLeftClick).setOnTouchListener(
+                new OfficeMouseButtonListener(MouseButtonPacket.BUTTON_LEFT));
+        findViewById(R.id.officeRightClick).setOnTouchListener(
+                new OfficeMouseButtonListener(MouseButtonPacket.BUTTON_RIGHT));
+        findViewById(R.id.officeKeyboard).setOnTouchListener(new OnTouchListener() {
+            @SuppressLint("ClickableViewAccessibility")
+            @Override
+            public boolean onTouch(View view, MotionEvent event) {
+                switch (event.getActionMasked()) {
+                    case MotionEvent.ACTION_DOWN:
+                        view.setPressed(true);
+                        break;
+                    case MotionEvent.ACTION_UP:
+                        view.setPressed(false);
+                        toggleKeyboard();
+                        break;
+                    case MotionEvent.ACTION_CANCEL:
+                        view.setPressed(false);
+                        break;
+                }
+                return true;
+            }
+        });
+
+        officeTrackpadPanel.setVisibility(View.VISIBLE);
+    }
+
+    // Holds a mouse button down for as long as the on-screen button is pressed,
+    // which allows click-and-drag in combination with the trackpad.
+    private class OfficeMouseButtonListener implements OnTouchListener {
+        private final byte button;
+
+        OfficeMouseButtonListener(byte button) {
+            this.button = button;
+        }
+
+        @SuppressLint("ClickableViewAccessibility")
+        @Override
+        public boolean onTouch(View view, MotionEvent event) {
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    view.setPressed(true);
+                    conn.sendMouseButtonDown(button);
+                    break;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    view.setPressed(false);
+                    conn.sendMouseButtonUp(button);
+                    break;
+            }
+            return true;
+        }
+    }
+
     private void setPreferredOrientationForCurrentDisplay() {
+        if (officeMode) {
+            // Office mode is designed around a portrait layout
+            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_USER_PORTRAIT);
+            return;
+        }
+
         Display display = getWindowManager().getDefaultDisplay();
 
         // For semi-square displays, we use more complex logic to determine which orientation to use (if any)
@@ -598,6 +712,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 performanceOverlayView.setVisibility(View.GONE);
                 notificationOverlayView.setVisibility(View.GONE);
 
+                if (officeTrackpadPanel != null) {
+                    officeTrackpadPanel.setVisibility(View.GONE);
+                }
+
                 // Disable sensors while in PiP mode
                 controllerHandler.disableSensors();
 
@@ -618,6 +736,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 }
 
                 notificationOverlayView.setVisibility(requestedNotificationOverlayVisibility);
+
+                if (officeTrackpadPanel != null) {
+                    officeTrackpadPanel.setVisibility(View.VISIBLE);
+                }
 
                 // Enable sensors again after exiting PiP
                 controllerHandler.enableSensors();
@@ -950,7 +1072,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             }
         }
 
-        if (prefConfig.stretchVideo || aspectRatioMatch) {
+        // Office mode must keep the aspect ratio so the stream only occupies the top of the screen
+        if (!officeMode && (prefConfig.stretchVideo || aspectRatioMatch)) {
             // Set the surface to the size of the video
             streamView.getHolder().setFixedSize(prefConfig.width, prefConfig.height);
         }
@@ -1487,10 +1610,16 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         return true;
     }
 
-    private TouchContext getTouchContext(int actionIndex)
+    private boolean isAbsoluteTouchMode() {
+        // Office mode always uses direct touch on the stream, since the trackpad panel
+        // below it provides relative mouse input.
+        return officeMode || !prefConfig.touchscreenTrackpad;
+    }
+
+    private TouchContext getTouchContext(TouchContext[] contexts, int actionIndex)
     {
-        if (actionIndex < touchContextMap.length) {
-            return touchContextMap[actionIndex];
+        if (actionIndex < contexts.length) {
+            return contexts[actionIndex];
         }
         else {
             return null;
@@ -2000,10 +2129,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     return true;
                 }
 
+                // In office mode, the trackpad panel has its own set of relative touch contexts
+                TouchContext[] contexts = (officeMode && view == officeTrackpadView) ?
+                        officeTouchContextMap : touchContextMap;
+
                 // If this is the parent view, we'll offset our coordinates to appear as if they
                 // are relative to the StreamView like our StreamView touch events are.
                 float xOffset, yOffset;
-                if (view != streamView && !prefConfig.touchscreenTrackpad) {
+                if (view != streamView && contexts == touchContextMap && isAbsoluteTouchMode()) {
                     xOffset = -streamView.getX();
                     yOffset = -streamView.getY();
                 }
@@ -2025,7 +2158,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
                     // Cancel the first and second touches to avoid
                     // erroneous events
-                    for (TouchContext aTouchContext : touchContextMap) {
+                    for (TouchContext aTouchContext : contexts) {
                         aTouchContext.cancelTouch();
                     }
 
@@ -2041,7 +2174,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     return true;
                 }*/
 
-                TouchContext context = getTouchContext(actionIndex);
+                TouchContext context = getTouchContext(contexts, actionIndex);
                 if (context == null) {
                     return false;
                 }
@@ -2050,7 +2183,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 {
                 case MotionEvent.ACTION_POINTER_DOWN:
                 case MotionEvent.ACTION_DOWN:
-                    for (TouchContext touchContext : touchContextMap) {
+                    for (TouchContext touchContext : contexts) {
                         touchContext.setPointerCount(event.getPointerCount());
                     }
                     context.touchDownEvent(eventX, eventY, event.getEventTime(), true);
@@ -2074,7 +2207,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         context.touchUpEvent(eventX, eventY, event.getEventTime());
                     }
 
-                    for (TouchContext touchContext : touchContextMap) {
+                    for (TouchContext touchContext : contexts) {
                         touchContext.setPointerCount(event.getPointerCount() - 1);
                     }
                     if (actionIndex == 0 && event.getPointerCount() > 1 && !context.isCancelled()) {
@@ -2091,7 +2224,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
                     // First process the historical events
                     for (int i = 0; i < event.getHistorySize(); i++) {
-                        for (TouchContext aTouchContextMap : touchContextMap) {
+                        for (TouchContext aTouchContextMap : contexts) {
                             if (aTouchContextMap.getActionIndex() < event.getPointerCount())
                             {
                                 aTouchContextMap.touchMoveEvent(
@@ -2103,7 +2236,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     }
 
                     // Now process the current values
-                    for (TouchContext aTouchContextMap : touchContextMap) {
+                    for (TouchContext aTouchContextMap : contexts) {
                         if (aTouchContextMap.getActionIndex() < event.getPointerCount())
                         {
                             aTouchContextMap.touchMoveEvent(
@@ -2114,7 +2247,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     }
                     break;
                 case MotionEvent.ACTION_CANCEL:
-                    for (TouchContext aTouchContext : touchContextMap) {
+                    for (TouchContext aTouchContext : contexts) {
                         aTouchContext.cancelTouch();
                         aTouchContext.setPointerCount(0);
                     }

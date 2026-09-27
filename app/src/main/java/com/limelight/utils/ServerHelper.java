@@ -76,11 +76,19 @@ public class ServerHelper {
 
     public static void doStart(Activity parent, NvApp app, ComputerDetails computer,
                                ComputerManagerService.ComputerManagerBinder managerBinder) {
+        doStart(parent, app, computer, managerBinder, false);
+    }
+
+    public static void doStart(Activity parent, NvApp app, ComputerDetails computer,
+                               ComputerManagerService.ComputerManagerBinder managerBinder,
+                               boolean officeMode) {
         if (computer.state == ComputerDetails.State.OFFLINE || computer.activeAddress == null) {
             Toast.makeText(parent, parent.getResources().getString(R.string.pair_pc_offline), Toast.LENGTH_SHORT).show();
             return;
         }
-        parent.startActivity(createStartIntent(parent, app, computer, managerBinder));
+        Intent intent = createStartIntent(parent, app, computer, managerBinder);
+        intent.putExtra(Game.EXTRA_OFFICE_MODE, officeMode);
+        parent.startActivity(intent);
     }
 
     public static void doNetworkTest(final Activity parent) {

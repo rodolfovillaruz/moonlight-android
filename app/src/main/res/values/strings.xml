@@ -122,6 +122,11 @@
     <string name="applist_menu_cancel">Cancel</string>
     <string name="applist_menu_details">View Details</string>
     <string name="applist_menu_scut">Create Shortcut</string>
+    <string name="applist_menu_start_office_mode">Start in Office Mode</string>
+    <string name="office_trackpad_hint">Trackpad\n\nDrag to move · Tap to click · Two-finger tap to right-click · Two-finger drag to scroll</string>
+    <string name="office_left_click">Left</string>
+    <string name="office_right_click">Right</string>
+    <string name="office_keyboard">Keyboard</string>
     <string name="applist_menu_tv_channel">Add to Channel</string>
     <string name="applist_menu_hide_app">Hide App</string>
     <string name="applist_refresh_title">App List</string>
