@@ -85,7 +85,7 @@ jobs:
             echo "Unofficial, self-signed build of [Moonlight Android $TAG](https://github.com/$UPSTREAM_REPO/releases/tag/$TAG), built from the same commit as upstream."
             echo
             echo '> [!NOTE]'
-            echo '> These APKs use the package names `com.limelight.unofficial` / `com.limelight.root.unofficial` and are signed with this fork'"'"'s key, so they install **alongside** the official Moonlight app rather than upgrading it.'
+            echo '> This APK uses the package name `com.limelight.unofficial` and is signed with this fork'"'"'s key, so it installs **alongside** the official Moonlight app rather than upgrading it.'
             if body=$(gh release view "$TAG" -R "$UPSTREAM_REPO" --json body -q .body 2>/dev/null) && [ -n "$body" ]; then
               echo
               echo '## Upstream changes'
@@ -97,13 +97,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          apks=(src/dist/app-nonRoot-release.apk src/dist/app-root-release.apk)
+          apk=src/dist/app-nonRoot-release.apk
           if gh release view "$TAG" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-            gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber "${apks[@]}"
+            gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber "$apk"
             gh release edit "$TAG" -R "$GITHUB_REPOSITORY" -F notes.md
+            # Root APKs are no longer built; drop any left over from older runs
+            gh release delete-asset "$TAG" app-root-release.apk -R "$GITHUB_REPOSITORY" -y 2>/dev/null || true
           else
             gh release create "$TAG" -R "$GITHUB_REPOSITORY" --verify-tag \
-              -t "Moonlight Android $TAG" -F notes.md "${apks[@]}"
+              -t "Moonlight Android $TAG" -F notes.md "$apk"
           fi
 
       - name: Clean up keystore

@@ -10,7 +10,7 @@
 #     moonlight-builder bash docker/build-release.sh
 #
 # Set KEYSTORE to override the default /keys/moonlight-fork.jks.
-# Signed APKs are written to dist/.
+# Only the nonRoot flavor is built; the signed APK is written to dist/.
 set -euo pipefail
 
 KEYSTORE="${KEYSTORE:-/keys/moonlight-fork.jks}"
@@ -27,18 +27,16 @@ fi
 git config --global --add safe.directory '*'
 git submodule update --init --recursive
 
-./gradlew --no-daemon assembleRelease
+./gradlew --no-daemon assembleNonRootRelease
+
+unsigned="app/build/outputs/apk/nonRoot/release/app-nonRoot-release-unsigned.apk"
+aligned="$(mktemp --suffix=.apk)"
+out="dist/app-nonRoot-release.apk"
 
 mkdir -p dist
-for flavor in nonRoot root; do
-    unsigned="app/build/outputs/apk/$flavor/release/app-$flavor-release-unsigned.apk"
-    aligned="$(mktemp --suffix=.apk)"
-    out="dist/app-$flavor-release.apk"
+zipalign -p -f 4 "$unsigned" "$aligned"
+apksigner sign --ks "$KEYSTORE" --ks-pass env:KS_PASS --out "$out" "$aligned"
+rm -f "$aligned"
 
-    zipalign -p -f 4 "$unsigned" "$aligned"
-    apksigner sign --ks "$KEYSTORE" --ks-pass env:KS_PASS --out "$out" "$aligned"
-    rm -f "$aligned"
-
-    apksigner verify --print-certs "$out"
-    echo "Signed: $out"
-done
+apksigner verify --print-certs "$out"
+echo "Signed: $out"
